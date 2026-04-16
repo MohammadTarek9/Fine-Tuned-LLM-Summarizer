@@ -26,7 +26,7 @@ class FewShotExample:
 @dataclass
 class GenerationParams:
     """inference hyperparameters"""
-    temperature: float = 1
+    temperature: float = 0.95
     top_k: int = 50
     top_p: float = 0.95
     max_new_tokens: int = 200
@@ -116,6 +116,86 @@ class DomainSummarizer:
         Summary:\n
         """
         return prompt
+    
+    def summarize(
+        self,
+        article: str,
+        generation: Optional[GenerationParams] = None,
+        few_shot_examples: Optional[List[FewShotExample]] = None,
+    ) -> str:
+        """generate one summary from raw article using zero-shot or few-shot prompt"""
+        self._ensure_loaded()
+
+        if not article or not article.strip():
+            raise ValueError("Input text is empty.")
+
+        generation = (generation or GenerationParams()).clip_values()
+        use_few_shot = few_shot_examples is not None and len(few_shot_examples) > 0
+
+        prompt = (
+            self.build_few_shot_prompt(article, few_shot_examples or [])
+            if use_few_shot
+            else self.build_zero_shot_prompt(article)
+        )
+
+        # greedy decoding or sampling
+        do_sample = generation.temperature != 1.0 or generation.top_k > 0 or generation.top_p < 1.0
+
+        try:
+            encoded = self.tokenizer(
+                prompt,
+                return_tensors="pt",
+                truncation=True,
+                max_length=self.max_input_tokens,
+            )
+            encoded = {k: v.to(self.device) for k, v in encoded.items()}
+
+            with torch.inference_mode():
+                output_ids = self.model.generate(
+                    **encoded,
+                    max_new_tokens=generation.max_new_tokens,
+                    temperature=generation.temperature,
+                    top_k=generation.top_k,
+                    top_p=generation.top_p,
+                    do_sample=do_sample,
+                    num_beams=1,
+                )
+
+            summary = self.tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
+            return summary
+
+        except RuntimeError as exc:
+            if "out of memory" in str(exc).lower():
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                raise RuntimeError(
+                    "CUDA out of memory during generation. "
+                ) from exc
+            raise
+
+    def summarize_batch(
+        self,
+        articles: List[str],
+        generation: Optional[GenerationParams] = None,
+        few_shot_examples: Optional[List[FewShotExample]] = None,
+    ) -> List[str]:
+        """generate summaries for a list of articles sequentially"""
+        self._ensure_loaded()
+        return [
+            self.summarize(
+                article=text,
+                generation=generation,
+                few_shot_examples=few_shot_examples,
+            )
+            for text in articles
+        ]
+
+    def unload(self) -> None:
+        """free model memory explicitly"""
+        self.model = None
+        self.tokenizer = None
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
     
 
 
