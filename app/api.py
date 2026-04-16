@@ -1,0 +1,1 @@
+"""FastAPI starter for summarization inference."""
