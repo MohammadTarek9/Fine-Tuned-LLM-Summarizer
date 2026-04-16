@@ -10,8 +10,6 @@ The core model is `google/flan-t5-base`. The workflow includes:
 - generation configuration experiments
 - deployment with FastAPI and Gradio
 
-The design is optimized for Google Colab free tier (T4 GPU) with memory-aware defaults and reproducibility controls.
-
 ## Architecture
 The project is organized into five layers:
 
