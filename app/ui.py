@@ -84,7 +84,7 @@ def build_ui() -> gr.Blocks:
             temperature = gr.Slider(0.01, 2.0, value=0.7, step=0.01, label="Temperature")
             top_k = gr.Slider(0, 100, value=50, step=1, label="Top-k")
             top_p = gr.Slider(0.1, 1.0, value=0.95, step=0.01, label="Top-p")
-            max_new_tokens = gr.Slider(16, 512, value=128, step=8, label="Max new tokens")
+            max_new_tokens = gr.Slider(16, 5000, value=128, step=8, label="Max new tokens")
 
         run_btn = gr.Button("Summarize")
 

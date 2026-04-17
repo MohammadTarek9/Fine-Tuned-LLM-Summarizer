@@ -22,7 +22,7 @@ class SummarizeRequest(BaseModel):
     temperature: float = Field(0.7, ge=0.01, le=2.0)
     top_k: int = Field(50, ge=0)
     top_p: float = Field(0.95, ge=0.1, le=1.0)
-    max_new_tokens: int = Field(128, ge=16, le=512)
+    max_new_tokens: int = Field(128, ge=16, le=5000)
     use_finetuned: bool = Field(False, description="Use LoRA adapter if available.")
 
 class SummarizeResponse(BaseModel):
