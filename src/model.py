@@ -39,6 +39,10 @@ class GenerationParams:
             top_p=float(min(max(self.top_p, 0.1), 1.0)),
             max_new_tokens=int(min(max(self.max_new_tokens, 16), 512)),
         )
+
+    def sanitized(self) -> GenerationParams:
+        """backward-compatible alias for sanitized generation values"""
+        return self.clip_values()
     
 @dataclass
 class DomainSummarizer:
@@ -49,7 +53,7 @@ class DomainSummarizer:
     adapter_path: Optional[str] = None
     device: Optional[str] = None
     seed: int = 42
-    max_input_tokens = 1024
+    max_input_tokens: int = 1024
     tokenizer: Optional[AutoTokenizer] = field(default = None, init = False)
     model: Optional[AutoModelForSeq2SeqLM] = field(default = None, init = False)
 
@@ -85,7 +89,7 @@ class DomainSummarizer:
                 f"Failed to load summarizer model '{self.model_name}'"
             ) from exc
         
-    def ensure_loaded(self) -> None:
+    def _ensure_loaded(self) -> None:
         """ensure model and tokenizer are loaded"""
         if self.model is None or self.tokenizer is None:
             raise RuntimeError("Model is not loaded. Call load() first.")
@@ -105,7 +109,7 @@ class DomainSummarizer:
         demo_blocks = []
         for ex in examples:
             demo_blocks.append(f"Article:\n{ex.article.strip()}\n\nSummary:\n{ex.summary.strip()}\n")
-            demonstrations = "\n".join(demo_blocks)
+        demonstrations = "\n".join(demo_blocks)
         
         prompt = f"""
         You are a concise summarization assistant.\n
