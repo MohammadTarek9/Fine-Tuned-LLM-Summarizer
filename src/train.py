@@ -148,7 +148,7 @@ def train(cfg: TrainConfig) -> None:
         model=model,
         args=args,
         train_dataset=tokenized,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         data_collator=collator,
     )
 
