@@ -1,11 +1,17 @@
 """FastAPI starter for summarization inference."""
 from __future__ import annotations
+import sys
 from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from src.model import DomainSummarizer, GenerationParams
+
+try:
+    from src.model import DomainSummarizer, GenerationParams
+except ModuleNotFoundError:
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from src.model import DomainSummarizer, GenerationParams
 
 BASE_MODEL = DomainSummarizer(model_name = "google/flan-t5-base")
 FINETUNED_MODEL: Optional[DomainSummarizer] = None

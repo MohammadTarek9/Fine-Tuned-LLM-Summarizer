@@ -1,9 +1,15 @@
 """Gradio app for side-by-side base vs fine-tuned summarization."""
 from __future__ import annotations
+import sys
 from pathlib import Path
 from typing import Optional, Tuple
 import gradio as gr
-from src.model import DomainSummarizer, GenerationParams
+
+try:
+    from src.model import DomainSummarizer, GenerationParams
+except ModuleNotFoundError:
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from src.model import DomainSummarizer, GenerationParams
 
 BASE_MODEL = DomainSummarizer(model_name="google/flan-t5-base")
 FINETUNED_MODEL: Optional[DomainSummarizer] = None
