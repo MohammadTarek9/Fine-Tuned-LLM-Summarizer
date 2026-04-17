@@ -53,17 +53,18 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Domain Summarizer API", version="1.0.0", lifespan=lifespan)
 
 @app.get("/health")
-def health() -> dict:
-    """health endpoint for quick service checks"""
+def health():
     return {
         "status": "ok",
-        "base_model_loaded": BASE_MODEL.model is not None,
-        "finetuned_model_loaded": FINETUNED_MODEL is not None and FINETUNED_MODEL.model is not None,
+        "base_model_loaded": app.state.base_model.model is not None,
+        "finetuned_model_loaded": (
+            app.state.finetuned_model is not None
+            and app.state.finetuned_model.model is not None
+        ),
     }
 
 @app.post("/summarize", response_model=SummarizeResponse)
-def summarize(payload: SummarizeRequest) -> SummarizeResponse:
-    """summarize text with base or fine-tuned model"""
+def summarize(payload: SummarizeRequest):
     generation = GenerationParams(
         temperature=payload.temperature,
         top_k=payload.top_k,
@@ -71,12 +72,13 @@ def summarize(payload: SummarizeRequest) -> SummarizeResponse:
         max_new_tokens=payload.max_new_tokens
     )
 
-    model = BASE_MODEL
+    model = app.state.base_model
     model_label = "base"
+
     if payload.use_finetuned:
-        if FINETUNED_MODEL is None:
+        if app.state.finetuned_model is None:
             raise HTTPException(status_code=400, detail="Fine-tuned model not available.")
-        model = FINETUNED_MODEL
+        model = app.state.finetuned_model
         model_label = "fine-tuned"
 
     try:
