@@ -95,7 +95,7 @@ def train(cfg: TrainConfig) -> None:
     tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
     model = AutoModelForSeq2SeqLM.from_pretrained(
         cfg.model_name,
-        torch_dtype=torch_dtype,
+        dtype=torch_dtype,
     )
 
     # gradient checkpointing trades extra compute for lower memory usage on T4

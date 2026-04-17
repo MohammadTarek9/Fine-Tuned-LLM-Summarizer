@@ -9,56 +9,59 @@ import torch
 from peft import PeftModel
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
+
 def set_seed(seed: int = 42) -> None:
-    """set a random seed for reproducability across CPU and GPU"""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
+
+
 @dataclass
 class FewShotExample:
-    """demonstration pair for few-shot prompting"""
     article: str
     summary: str
 
+
 @dataclass
 class GenerationParams:
-    """inference hyperparameters"""
-    temperature: float = 0.95
-    top_k: int = 50
-    top_p: float = 0.95
-    max_new_tokens: int = 200
+    temperature: float = 0.0
+    top_k: Optional[int] = None
+    top_p: Optional[float] = None
+    max_new_tokens: int = 128
 
-    def clip_values(self) -> GenerationParams:
-        """clip inference values to safe ranges"""
+    def use_sampling(self) -> bool:
+        """Decide whether to sample or use greedy decoding"""
+        return self.temperature is not None and self.temperature > 0
+
+    def sanitized(self) -> GenerationParams:
         return GenerationParams(
-            temperature=float(min(max(self.temperature, 0.01), 2.0)),
-            top_k=int(max(self.top_k, 0)),
-            top_p=float(min(max(self.top_p, 0.1), 1.0)),
+            temperature=max(0.0, float(self.temperature)),
+            top_k=None if self.top_k in [None, 0] else int(self.top_k),
+            top_p=None if self.top_p in [None, 0] else float(min(max(self.top_p, 0.1), 1.0)),
             max_new_tokens=int(min(max(self.max_new_tokens, 16), 512)),
         )
 
-    def sanitized(self) -> GenerationParams:
-        """backward-compatible alias for sanitized generation values"""
-        return self.clip_values()
-    
+
 @dataclass
 class DomainSummarizer:
-    """inference wrapper for base Flan-T5
-    and optional LoRA-adapted model
-    """
     model_name: str = "google/flan-t5-base"
     adapter_path: Optional[str] = None
     device: Optional[str] = None
     seed: int = 42
-    max_input_tokens: int = 1024
-    tokenizer: Optional[AutoTokenizer] = field(default = None, init = False)
-    model: Optional[AutoModelForSeq2SeqLM] = field(default = None, init = False)
+
+    max_input_tokens: int = 512
+
+    max_article_chars: int = 2000
+    max_demo_article_chars: int = 200
+    max_demo_summary_chars: int = 80
+
+    tokenizer: Optional[AutoTokenizer] = field(default=None, init=False)
+    model: Optional[AutoModelForSeq2SeqLM] = field(default=None, init=False)
 
     def load(self) -> None:
-        """load tokenizer/model and optionally attach LoRA adapter"""
         set_seed(self.seed)
 
         if self.device is None:
@@ -66,116 +69,165 @@ class DomainSummarizer:
 
         dtype = torch.float16 if self.device == "cuda" else torch.float32
 
-        try:
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
 
-            self.model = AutoModelForSeq2SeqLM.from_pretrained(
-                self.model_name,
-                torch_dtype=dtype,
-            )
+        self.model = AutoModelForSeq2SeqLM.from_pretrained(
+            self.model_name,
+            dtype=dtype,
+        )
 
-            if self.adapter_path:
-                adapter_dir = Path(self.adapter_path)
-                if not adapter_dir.exists():
-                    raise FileNotFoundError(f"Adapter path not found: {adapter_dir}")
-                self.model = PeftModel.from_pretrained(self.model, str(adapter_dir))
+        # Override max_input_tokens with the model's own declared limit if it
+        # is smaller than what was configured — prevents positional embedding
+        # errors on models like flan-t5-base whose true limit is 512.
+        model_max = getattr(self.model.config, "n_positions", None) or \
+                    getattr(self.model.config, "max_position_embeddings", None) or \
+                    getattr(self.tokenizer, "model_max_length", None)
+        if model_max and model_max < self.max_input_tokens:
+            self.max_input_tokens = model_max
 
-            # move all model params to the device
-            self.model.to(self.device)
-            self.model.eval()
+        if self.adapter_path:
+            adapter_dir = Path(self.adapter_path)
+            if not adapter_dir.exists():
+                raise FileNotFoundError(f"Adapter path not found: {adapter_dir}")
+            self.model = PeftModel.from_pretrained(self.model, str(adapter_dir))
 
-        except Exception as exc:
-            raise RuntimeError(
-                f"Failed to load summarizer model '{self.model_name}'"
-            ) from exc
-        
+        self.model.to(self.device)
+        self.model.eval()
+
     def _ensure_loaded(self) -> None:
-        """ensure model and tokenizer are loaded"""
         if self.model is None or self.tokenizer is None:
             raise RuntimeError("Model is not loaded. Call load() first.")
-        
-    def build_zero_shot_prompt(self, article: str) -> str:
-        """build a prompt for zero-shot inference"""
-        article = article.strip()
-        prompt = f"""
-        Summarize the following news article in 2-3 sentences.\n
-        Article:\n{article}\n\nSummary:
-        """
-        return prompt
 
-    def build_few_shot_prompt(self, article: str, examples: List[FewShotExample]) -> str:
-        """build a prompt for few-shot inference"""
-        article = article.strip()
+
+    @staticmethod
+    def _truncate_text(text: str, max_chars: int) -> str:
+        text = text.strip()
+        if len(text) <= max_chars:
+            return text
+        return text[:max_chars].rsplit(" ", 1)[0].strip() + " ..."
+
+    def _token_len(self, text: str) -> int:
+        """Count tokens without triggering max-length warnings."""
+        if self.tokenizer is None:
+            # Rough fallback when tokenizer is unavailable.
+            return len(text) // 3
+        return len(self.tokenizer.tokenize(text))
+
+    def build_zero_shot_prompt(self, article: str) -> str:
+        article = self._truncate_text(article, self.max_article_chars)
+
+        return (
+            "Summarize the following news article in 2-3 sentences.\n\n"
+            f"Article:\n{article}\n\n"
+            "Summary:"
+        )
+
+    def build_few_shot_prompt(
+        self,
+        article: str,
+        examples: List[FewShotExample],
+    ) -> str:
+        article = self._truncate_text(article, self.max_article_chars)
+
+        # Measure the fixed overhead: instruction + query article + "Summary:" label.
+        # This is everything in the prompt that isn't the demonstration blocks.
+        # The demo budget is whatever token space remains after this fixed overhead.
+        fixed_frame = (
+            "Summarize the following news article in 2-3 sentences.\n\n"
+            f"Article:\n{article}\n\n"
+            "Summary:"
+        )
+
+        fixed_tokens = self._token_len(fixed_frame)
+
+        demo_budget = max(0, self.max_input_tokens - fixed_tokens - 8)  # 8-token safety margin
+
         demo_blocks = []
+        tokens_used = 0
         for ex in examples:
-            demo_blocks.append(f"Article:\n{ex.article.strip()}\n\nSummary:\n{ex.summary.strip()}\n")
+            demo_article = self._truncate_text(ex.article, self.max_demo_article_chars)
+            demo_summary = self._truncate_text(ex.summary, self.max_demo_summary_chars)
+            block = f"Article:\n{demo_article}\n\nSummary:\n{demo_summary}\n"
+
+            block_tokens = self._token_len(block)
+
+            if tokens_used + block_tokens > demo_budget:
+                break  # Skip this demo rather than overflow the context
+
+            demo_blocks.append(block)
+            tokens_used += block_tokens
+
         demonstrations = "\n".join(demo_blocks)
-        
-        prompt = f"""
-        You are a concise summarization assistant.\n
-        Use the style of the examples.\n\n
-        {demonstrations}\n
-        Article:\n
-        {article}\n\n
-        Summary:\n
-        """
-        return prompt
-    
+
+        return (
+            "Summarize the following news article in 2-3 sentences.\n\n"
+            f"{demonstrations}\n"
+            f"Article:\n{article}\n\n"
+            "Summary:"
+        )
+
     def summarize(
         self,
         article: str,
         generation: Optional[GenerationParams] = None,
         few_shot_examples: Optional[List[FewShotExample]] = None,
     ) -> str:
-        """generate one summary from raw article using zero-shot or few-shot prompt"""
         self._ensure_loaded()
 
-        if not article or not article.strip():
+        if not article.strip():
             raise ValueError("Input text is empty.")
 
-        generation = (generation or GenerationParams()).clip_values()
-        use_few_shot = few_shot_examples is not None and len(few_shot_examples) > 0
+        generation = (generation or GenerationParams()).sanitized()
+
+        use_few_shot = bool(few_shot_examples)
 
         prompt = (
-            self.build_few_shot_prompt(article, few_shot_examples or [])
+            self.build_few_shot_prompt(article, few_shot_examples)
             if use_few_shot
             else self.build_zero_shot_prompt(article)
         )
 
-        # greedy decoding or sampling
-        do_sample = generation.temperature != 1.0 or generation.top_k > 0 or generation.top_p < 1.0
+        encoded = self.tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=self.max_input_tokens,
+        )
+        encoded = {k: v.to(self.device) for k, v in encoded.items()}
 
-        try:
-            encoded = self.tokenizer(
-                prompt,
-                return_tensors="pt",
-                truncation=True,
-                max_length=self.max_input_tokens,
+        generate_kwargs = {
+            "max_new_tokens": generation.max_new_tokens,
+            "num_beams": 1,
+        }
+
+        if generation.use_sampling():
+            generate_kwargs.update(
+                {
+                    "do_sample": True,
+                    "temperature": generation.temperature,
+                }
             )
-            encoded = {k: v.to(self.device) for k, v in encoded.items()}
 
-            with torch.inference_mode():
-                output_ids = self.model.generate(
-                    **encoded,
-                    max_new_tokens=generation.max_new_tokens,
-                    temperature=generation.temperature,
-                    top_k=generation.top_k,
-                    top_p=generation.top_p,
-                    do_sample=do_sample,
-                    num_beams=1,
-                )
+            if generation.top_k is not None:
+                generate_kwargs["top_k"] = generation.top_k
 
-            summary = self.tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
-            return summary
+            if generation.top_p is not None:
+                generate_kwargs["top_p"] = generation.top_p
+        else:
+            generate_kwargs["do_sample"] = False
 
-        except RuntimeError as exc:
-            if "out of memory" in str(exc).lower():
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                raise RuntimeError(
-                    "CUDA out of memory during generation. "
-                ) from exc
-            raise
+        with torch.inference_mode():
+            output_ids = self.model.generate(
+                **encoded,
+                **generate_kwargs,
+            )
+
+        summary = self.tokenizer.decode(
+            output_ids[0],
+            skip_special_tokens=True
+        ).strip()
+
+        return summary
 
     def summarize_batch(
         self,
@@ -183,8 +235,6 @@ class DomainSummarizer:
         generation: Optional[GenerationParams] = None,
         few_shot_examples: Optional[List[FewShotExample]] = None,
     ) -> List[str]:
-        """generate summaries for a list of articles sequentially"""
-        self._ensure_loaded()
         return [
             self.summarize(
                 article=text,
@@ -195,13 +245,7 @@ class DomainSummarizer:
         ]
 
     def unload(self) -> None:
-        """free model memory explicitly"""
         self.model = None
         self.tokenizer = None
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-    
-
-
-
-
