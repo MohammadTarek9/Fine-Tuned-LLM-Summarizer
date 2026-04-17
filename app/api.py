@@ -1,12 +1,11 @@
 """FastAPI starter for summarization inference."""
 from __future__ import annotations
 from pathlib import Path
+from contextlib import asynccontextmanager
 from typing import Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from src.model import DomainSummarizer, GenerationParams
-
-app = FastAPI(title="Domain Summarizer API", version="1.0.0")
 
 BASE_MODEL = DomainSummarizer(model_name = "google/flan-t5-base")
 FINETUNED_MODEL: Optional[DomainSummarizer] = None
@@ -25,23 +24,33 @@ class SummarizeResponse(BaseModel):
     summary: str
     model_used: str
 
-@app.on_event("startup")
-def startup_event() -> None:
-    """load base model once at startup and load adapter if available"""
-    global FINETUNED_MODEL
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """load models at startup"""
     try:
         BASE_MODEL.load()
+        app.state.base_model = BASE_MODEL
     except Exception as exc:
         raise RuntimeError("Failed to load base summarizer on startup.") from exc
-    
+
     adapter_dir = Path("./lora-adapter")
+    finetuned_model = None
+
     if adapter_dir.exists():
         try:
-            FINETUNED_MODEL = DomainSummarizer(model_name="google/flan-t5-base", adapter_path=str(adapter_dir))
+            finetuned_model = DomainSummarizer(
+                model_name="google/flan-t5-base",
+                adapter_path=str(adapter_dir),
+            )
+            finetuned_model.load() 
         except Exception:
-            # serve base model if adapter path fails
-            FINETUNED_MODEL = None
+            finetuned_model = None
 
+    app.state.finetuned_model = finetuned_model
+
+    yield
+
+app = FastAPI(title="Domain Summarizer API", version="1.0.0", lifespan=lifespan)
 
 @app.get("/health")
 def health() -> dict:
