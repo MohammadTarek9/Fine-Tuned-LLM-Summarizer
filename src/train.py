@@ -52,7 +52,7 @@ class TrainConfig:
     lora_dropout: float = 0.1
     target_modules: List[str] = None
 
-    def __post__init__(self) -> None:
+    def __post_init__(self) -> None:
         if self.target_modules is None:
             self.target_modules = ["q", "v"]
     
