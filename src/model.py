@@ -30,7 +30,7 @@ class GenerationParams:
     temperature: float = 0.0
     top_k: Optional[int] = None
     top_p: Optional[float] = None
-    max_new_tokens: int = 128
+    max_new_tokens: int = 256
 
     def use_sampling(self) -> bool:
         """Decide whether to sample or use greedy decoding"""
@@ -41,7 +41,7 @@ class GenerationParams:
             temperature=max(0.0, float(self.temperature)),
             top_k=None if self.top_k in [None, 0] else int(self.top_k),
             top_p=None if self.top_p in [None, 0] else float(min(max(self.top_p, 0.1), 1.0)),
-            max_new_tokens=int(min(max(self.max_new_tokens, 16), 512)),
+            max_new_tokens=int(min(self.max_new_tokens, 512)),
         )
 
 
